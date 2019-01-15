@@ -5,6 +5,28 @@ import 'package:http/http.dart' as http;
 import 'package:charts_flutter/flutter.dart' as charts;
 import 'package:charts_common/src/common/color.dart' as chart_color;
 
+class BagofWords {
+  final String id;
+  final String name;
+
+  BagofWords(this.id, this.name);
+
+  factory BagofWords.fromJson(Map<String, dynamic> json) {
+    return BagofWords(json['_id'], json['name']);
+  }
+}
+
+class BagofWordsList {
+  final List<BagofWords> bags;
+
+  BagofWordsList(this.bags);
+
+  factory BagofWordsList.fromJson(Map<String, dynamic> json) {
+    return BagofWordsList(List.generate(
+        json['data'].length, (idx) => BagofWords.fromJson(json['data'][idx])));
+  }
+}
+
 class CyranoWord {
   //{"color":"#faa000","dimensions":"Nurturing","found":true,"in_graph":"1","text":"world","weight":0.3}],"success":true}
   String color;
@@ -34,6 +56,7 @@ class CyranoWord {
 
   Color get realcolor =>
       Color(int.parse("0x${color.substring(1)}") | 0xFF000000);
+
   chart_color.Color get chartcolor => chart_color.Color.fromHex(code: color);
 }
 
@@ -101,9 +124,16 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   Future<CyranoData> _data;
+  Future<BagofWordsList> _list;
   String _model = "5be758a7fd4f43000c77812d";
   String _submittedText = '';
   CyranoData _snapshot;
+  ScrollController _scrollController = new ScrollController();
+
+  _MyHomePageState() : super() {
+    _list = fetchBagData();
+    print("Fetch bag!");
+  }
 
   // Create a text controller. We will use it to retrieve the current value
   // of the TextField!
@@ -118,7 +148,32 @@ class _MyHomePageState extends State<MyHomePage> {
 
   var map = {};
 
-  Future<CyranoData> fetchData() async {
+  Future<BagofWordsList> fetchBagData() async {
+    final response = await http
+        .get("http://color-demo-api.cyrano.ai/bag_of_words", headers: {
+      "auth_key":
+          "A7BB481E40C7EC70AB255B3991186C382F471BC19DDC31D3FD55FC8E8439DBE8"
+    });
+
+    if (response.statusCode == 200) {
+      // If the call to the server was successful, parse the JSON
+      print("Bag of Words Response: ${response.body}");
+      BagofWordsList b = BagofWordsList.fromJson(json.decode(response.body));
+      setState(() {
+        models = [];
+        for (var i in b.bags) {
+          models.add([i.id, i.name]);
+        }
+      });
+      return b;
+    } else {
+      // If that call was not successful, throw an error.
+      print("Error: ${response.body}");
+      throw Exception('Cyrano.ai returned an error: ${response.reasonPhrase}');
+    }
+  }
+
+  Future<CyranoData> fetchWeightData() async {
     print("Fetching for model $_model");
     final response = await http.post(
         "http://color-demo-api.cyrano.ai/chat/$_model",
@@ -146,7 +201,9 @@ class _MyHomePageState extends State<MyHomePage> {
       // so that the display can reflect the updated values. If we changed
       // data without calling setState(), then the build method would not be
       // called again, and so nothing would appear to happen.
-      _data = fetchData();
+      if (myController.text.length > 0) {
+        _data = fetchWeightData();
+      }
     });
   }
 
@@ -168,11 +225,12 @@ class _MyHomePageState extends State<MyHomePage> {
           // Center is a layout widget. It takes a single child and positions it
           // in the middle of the parent.
           child: SingleChildScrollView(
+            controller: _scrollController,
             child: Column(
               // Column is also layout widget. It takes a list of children and
               // arranges them vertically. By default, it sizes itself to fit its
               // children horizontally, and tries to be as tall as its parent.
-              //
+              //```````````````````````````````
               // Invoke "debug painting" (press "p" in the console, choose the
               // "Toggle Debug Paint" action from the Flutter Inspector in Android
               // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
@@ -192,11 +250,18 @@ class _MyHomePageState extends State<MyHomePage> {
                           horizontal: 28.0, vertical: 30.0),
                       child: Text("Model"),
                     ),
-                    new DropdownButton<String>(
-                      onChanged: _onModelChange,
-                      value: _model,
-                      items: _getModelItems(),
-                    )
+                    FutureBuilder<BagofWordsList>(
+                        future: _list,
+                        builder: (context, snapshot) {
+                          if (snapshot.hasData) {
+                            return DropdownButton<String>(
+                                onChanged: _onModelChange,
+                                value: _model,
+                                items: _getModelItems());
+                          }
+                          // By default, show a loading spinner
+                          return CircularProgressIndicator();
+                        })
                   ],
                 ),
                 Padding(
@@ -215,11 +280,12 @@ class _MyHomePageState extends State<MyHomePage> {
                             (f) => widgets.add(_textFromCyranoWord(f)));
                         return Column(
                           children: <Widget>[
-                            Container(
-                                child: SimpleBarChart.withData(generateSeriesData()),
-                                constraints:
-                                    BoxConstraints.tightFor(height: 100)),
-                            Wrap(children: widgets),
+                            ChartContainer(generateSeriesData()),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 18.0),
+                              child: Wrap(children: widgets),
+                            )
                           ],
                         );
                       } else if (snapshot.hasError) {
@@ -240,12 +306,28 @@ class _MyHomePageState extends State<MyHomePage> {
                         hintText: 'Please enter text to analyze'),
                   ),
                 ),
-                // This trailing comma makes auto-formatting nicer for build methods.
                 new Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     mainAxisSize: MainAxisSize.max,
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: _data == null
+                            ? Container()
+                            : new RaisedButton(
+                                key: null,
+                                color: Colors.blue,
+                                textColor: Colors.white,
+                                onPressed: () {
+                                  _scrollController.animateTo(
+                                    0.0,
+                                    curve: Curves.easeOut,
+                                    duration: const Duration(milliseconds: 300),
+                                  );
+                                },
+                                child: new Icon(Icons.arrow_drop_up)),
+                      ),
                       Padding(
                         padding: const EdgeInsets.all(8.0),
                         child: new RaisedButton(
@@ -261,7 +343,8 @@ class _MyHomePageState extends State<MyHomePage> {
                                   fontFamily: "Roboto"),
                             )),
                       )
-                    ])
+                    ]),
+                // This trailing comma makes auto-formatting nicer for build methods.
               ],
             ),
           ),
@@ -272,22 +355,27 @@ class _MyHomePageState extends State<MyHomePage> {
     myController.text = _submittedText;
     setState(() {
       _model = newValue;
-      _data = fetchData();
+      if (myController.text.length > 0) {
+        _data = fetchWeightData();
+      }
     });
   }
 
+  var models = [
+    /*
+    ["5be758a7fd4f43000c77812d", "BANK CODE"]
+    ["5be8d6d8fd4f43000c7782dd", "Senses"],
+    ["5be8f3e8fd4f43000c778398", "Emotions"],
+    ["5be883d8fd4f43000c778223", "Commitment Motivation"],
+    ["5bfd1fd0fd4f43000c778979", "Direction"],
+    ["5bfd0810fd4f43000c778813", "Locus"],
+    ["5c04fceefd4f430009778047", "Persuasion"],
+    ["5bfd19ccfd4f43000c77890c", "Proximity"],
+    ["5c1571dcfd4f43000c7790bf", "Zero Abuse"],
+    */
+  ];
+
   _getModelItems() {
-    final models = [
-      ["5be758a7fd4f43000c77812d", "Bank"],
-      ["5be8d6d8fd4f43000c7782dd", "Senses"],
-      ["5be8f3e8fd4f43000c778398", "Emotions"],
-      ["5be883d8fd4f43000c778223", "Commitment Motivation"],
-      ["5bfd1fd0fd4f43000c778979", "Direction"],
-      ["5bfd0810fd4f43000c778813", "Locus"],
-      ["5c04fceefd4f430009778047", "Persuasion"],
-      ["5bfd19ccfd4f43000c77890c", "Proximity"],
-      ["5c1571dcfd4f43000c7790bf", "Zero Abuse"],
-    ];
     List<DropdownMenuItem<String>> list = new List();
     models.forEach((element) => list.add(new DropdownMenuItem<String>(
         value: element[0], child: new Text(element[1]))));
@@ -296,7 +384,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   var _models = new List<ModelScore>();
 
-  generateSeriesData() {
+  List<ModelScore> generateSeriesData() {
     var map = <String, ModelScore>{};
     if (_snapshot != null) {
       _models.clear();
@@ -306,7 +394,9 @@ class _MyHomePageState extends State<MyHomePage> {
                   () => new ModelScore(dimension, word.chartcolor, 0))
               .score += word.weight));
       print("Create model graph series $map");
-      if (_model == "5be758a7fd4f43000c77812d") {
+
+      var modelName = models.firstWhere((e) => e[0] == _model)[1];
+      if (modelName.toString().toLowerCase().contains("bank")) {
         // BANK
         ["Blueprint", "Action", "Nurturing", "Knowledge"].forEach((val) {
           if (map.containsKey(val)) {
@@ -322,6 +412,58 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 }
 
+class ChartContainer extends StatefulWidget {
+  final List<ModelScore> list;
+
+  static double getChartSize(length, height) {
+    double d = height * length;
+    if (d < 100) return 100;
+    return d;
+  }
+
+  ChartContainer(this.list);
+
+  @override
+  State<StatefulWidget> createState() => new ChartContainerState(list);
+}
+
+class ChartContainerState extends State<ChartContainer> {
+  final List<ModelScore> list;
+  int _height = 100;
+  int _previousHeight = 100;
+  bool animate = true;
+  ChartContainerState(this.list);
+
+  @override
+  Widget build(BuildContext context) {
+    return new GestureDetector(
+        onScaleStart: (scaleDetails) {
+          setState(() {
+            _previousHeight = _height;
+            animate = false;
+          });
+        },
+        onScaleEnd: (_) => setState(() => animate = true),
+        onScaleUpdate: (ScaleUpdateDetails scaleDetails) {
+          setState(() {
+            _height = (_previousHeight * scaleDetails.scale).toInt();
+            if (_height < 30) {
+              _height = 30;
+            } else if (_height > 100) {
+              _height = 100;
+            }
+          });
+        },
+        child: Container(
+            child:
+                HorizontalBarLabelChart.withData(list, animated: animate),
+            //SimpleBarChart.withData(generateSeriesData()),
+            constraints: BoxConstraints.tightFor(
+                height: ChartContainer.getChartSize(
+                    list.length.toDouble(), _height))));
+  }
+}
+
 Widget _textFromCyranoWord(CyranoWord cyranoWord) {
   return Padding(
     padding: const EdgeInsets.all(2.0),
@@ -332,6 +474,76 @@ Widget _textFromCyranoWord(CyranoWord cyranoWord) {
             fontWeight: FontWeight.bold,
             fontFamily: "Roboto")),
   );
+}
+
+class HorizontalBarLabelChart extends StatelessWidget {
+  final List<charts.Series> seriesList;
+  final bool animate;
+
+  HorizontalBarLabelChart(this.seriesList, {this.animate});
+
+  // [BarLabelDecorator] will automatically position the label
+  // inside the bar if the label will fit. If the label will not fit and the
+  // area outside of the bar is larger than the bar, it will draw outside of the
+  // bar. Labels can always display inside or outside using [LabelPosition].
+  //
+  // Text style for inside / outside can be controlled independently by setting
+  // [insideLabelStyleSpec] and [outsideLabelStyleSpec].
+  @override
+  Widget build(BuildContext context) {
+    return new charts.BarChart(
+      seriesList,
+      animate: animate,
+      vertical: false,
+      // Set a bar label decorator.
+      // Example configuring different styles for inside/outside:
+      //       barRendererDecorator: new charts.BarLabelDecorator(
+      //          insideLabelStyleSpec: new charts.TextStyleSpec(...),
+      //          outsideLabelStyleSpec: new charts.TextStyleSpec(...)),
+      barRendererDecorator: new charts.BarLabelDecorator<String>(),
+      // Hide domain axis.
+      domainAxis:
+          new charts.OrdinalAxisSpec(renderSpec: new charts.NoneRenderSpec()),
+    );
+  }
+
+  factory HorizontalBarLabelChart.withSampleData() {
+    return HorizontalBarLabelChart.withData(_createSampleData());
+  }
+
+  factory HorizontalBarLabelChart.withData(data, {animated = true}) {
+    return new HorizontalBarLabelChart(
+      _createSeries(data),
+      // Disable animations for image tests.
+      animate: animated,
+    );
+  }
+
+  /// Create one series with sample hard coded data.
+  static List<ModelScore> _createSampleData() {
+    //static List<charts.Series<ModelScore, String>> _createSampleData() {
+    return [
+      new ModelScore('2014', charts.MaterialPalette.blue.shadeDefault, 5),
+      new ModelScore('2015', charts.MaterialPalette.blue.shadeDefault, 25),
+      new ModelScore('2016', charts.MaterialPalette.blue.shadeDefault, 100),
+      new ModelScore('2017', charts.MaterialPalette.blue.shadeDefault, 75),
+    ];
+  }
+
+  static List<charts.Series<dynamic, String>> _createSeries(data) {
+    return [
+      new charts.Series<ModelScore, String>(
+          id: 'Scores',
+          colorFn: (t, __) => t.color,
+          domainFn: (ModelScore sales, _) => sales.label,
+          measureFn: (ModelScore sales, _) => sales.score,
+          data: data
+          // Set a label accessor to control the text of the bar label.
+/*          labelAccessorFn: (ModelScore sales, _) =>
+          '${sales.label}: \$${sales.score}')*/
+          )
+    ];
+  }
 }
 
 class SimpleBarChart extends StatelessWidget {
